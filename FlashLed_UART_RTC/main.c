@@ -11,7 +11,7 @@
  * USIC0 channel 1 is routed on P1.2 and P1.3 that are
  * connected to USB bridge
  *
- * 24 october 2016
+ * 25 october 2016
  *
  */
 
@@ -19,6 +19,8 @@
 #include <xmc_uart.h>
 #include <xmc_rtc.h>
 #include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
 
 #define LED1 P0_5
 #define LED2 P0_6
@@ -37,28 +39,34 @@ const uint8_t err_date[] = "\n\rDate not valid!\n\r";
 const uint8_t err_dow[] = "\n\rDay not valid!\n\r";
 const uint8_t ok_message[] = "\n\rOk!\n\r";
 const uint8_t ex_message[] = "\n\rExit\n\r";
-const uint8_t pls_time[]="\n\rPlease Set Time (HH:mm:ss)\n\r";
-const uint8_t pls_date[]="\n\rPlease Set Date (dd-mm-yy)\n\r";
-const uint8_t pls_dow[]="\n\rPlease Set day of week (0 to 6 where 0=Sunday,1=Monday etc.)\n\r";
+const uint8_t pls_time[]="\n\rPlease Set Time (HH:mm:ss)\n\r>";
+const uint8_t pls_date[]="\n\rPlease Set Date (dd-mm-yyyy)\n\r>";
+const uint8_t pls_dow[]="\n\rPlease Set day of week (0 to 6 where 0=Sunday,1=Monday etc.)\n\r>";
 
 const uint8_t daynames[7][3]={"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
 const uint8_t monthnames[12][3]={"Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
 
+// flags for entering in set mode
 bool setTime=false;
 bool setDate=false;
 bool setDayofweek=false;
 bool settings=false;
 
-uint8_t setTimeDateBuffer[9];
+bool started=false;
 
-XMC_RTC_TIME_t actual_time;
+uint8_t setTimeDateBuffer[10]; // buffer used to store time and date settings
+uint8_t ybuffer[4]; // year buffer for conversion in string
+// uint8_t buffer[15]; // used for experiments
+
+XMC_RTC_TIME_t actual_time; // structure used to retrieve date/time values from RTC
 
 // UART configuration
 const XMC_UART_CH_CONFIG_t uart_config =
 	{
-	.data_bits = 8U,
-	.stop_bits = 1U,
-	.baudrate = 115200
+	.data_bits=8,
+	.stop_bits=1,
+	.baudrate=115200,
+	.parity_mode=XMC_USIC_CH_PARITY_MODE_NONE
 	};
 
 // RTC Configuration
@@ -77,18 +85,35 @@ const XMC_RTC_CONFIG_t rtc_conf=
 	.prescaler=0x7FFF
 	};
 
-// rapid function for printing strings
-void print(const uint8_t *message, uint8_t length)
+// print strings until terminator \0
+void print(const uint8_t *message)
 	{
-	for (uint8_t i=0; i<length; i++)
+	uint8_t i=0;
+	while (message[i]!='\0')
 		{
-		XMC_UART_CH_Transmit(XMC_UART0_CH1, message[i]);
+		XMC_UART_CH_Transmit(XMC_UART0_CH1, message[i++]);
+		}
+	}
+
+// print number of chars
+void printn(const uint8_t *message, uint8_t length)
+	{
+	uint8_t i=0;
+	while (i<length)
+		{
+		XMC_UART_CH_Transmit(XMC_UART0_CH1, message[i++]);
 		}
 	}
 
 // System Timer Interrupt
 void SysTick_Handler(void)
 	{
+	// does nothing until entering in main loop
+	if (!started)
+		{
+		return;
+		}
+
     static uint32_t ticks = 0;
     ticks++;
     if (ticks == TICKS_WAIT)
@@ -116,7 +141,7 @@ void SysTick_Handler(void)
     		XMC_UART_CH_Transmit(XMC_UART0_CH1, ' ');
 
     		// print date (ddd dd-MMM-yyyy)
-    		print (daynames[actual_time.daysofweek],sizeof(daynames[actual_time.daysofweek]));
+    		printn(daynames[actual_time.daysofweek],3);
     		XMC_UART_CH_Transmit(XMC_UART0_CH1, ' ');
 
     		XMC_UART_CH_Transmit(XMC_UART0_CH1, (actual_time.days/10)+'0');
@@ -125,13 +150,25 @@ void SysTick_Handler(void)
 
     		//XMC_UART_CH_Transmit(XMC_UART0_CH1,((actual_time.month+1)/10)+'0');
     		//XMC_UART_CH_Transmit(XMC_UART0_CH1,((actual_time.month+1)%10)+'0');
-    		print(monthnames[actual_time.month],sizeof(monthnames[actual_time.month]));
+    		printn(monthnames[actual_time.month],3);
 
     		XMC_UART_CH_Transmit(XMC_UART0_CH1, '-');
+    		sprintf((char *)ybuffer,"%d",actual_time.year);
+    		print(ybuffer);
+
+    		/*
     		XMC_UART_CH_Transmit(XMC_UART0_CH1, '2');
     		XMC_UART_CH_Transmit(XMC_UART0_CH1, '0');
     		XMC_UART_CH_Transmit(XMC_UART0_CH1, ((actual_time.year-2000)/10)+'0');
     		XMC_UART_CH_Transmit(XMC_UART0_CH1, ((actual_time.year-2000)%10)+'0');
+			*/
+
+    		/*
+    		// this was just for understand what are raw0 and raw1 elements
+    		sprintf((char *)buffer,"%d",actual_time.raw0);
+    		XMC_UART_CH_Transmit(XMC_UART0_CH1, ' ');
+    		print(buffer,sizeof(buffer));
+    		*/
 
     		// print only carriage return
     		XMC_UART_CH_Transmit(XMC_UART0_CH1, 13); // cr
@@ -145,6 +182,15 @@ int main(void)
 	// Configure UART
 	XMC_UART_CH_Init(XMC_UART0_CH1, &uart_config);
 	XMC_UART_CH_SetInputSource(XMC_UART0_CH1, XMC_UART_CH_INPUT_RXD,USIC0_C1_DX0_P1_3);
+
+	// interrupt
+	/*
+	XMC_UART_CH_EnableEvent(XMC_UART0_CH1,XMC_UART_CH_EVENT_STANDARD_RECEIVE);
+	XMC_UART_CH_SetInterruptNodePointer(XMC_UART0_CH1,XMC_UART_CH_INTERRUPT_NODE_POINTER_RECEIVE);
+	NVIC_SetPriority(USIC0_0_IRQn, 3);
+	NVIC_EnableIRQ(USIC0_0_IRQn);
+	*/
+
 	// Start UART
 	XMC_UART_CH_Start(XMC_UART0_CH1);
 	// Configure I/Os
@@ -154,21 +200,28 @@ int main(void)
 	XMC_GPIO_SetMode(LED2, XMC_GPIO_MODE_OUTPUT_PUSH_PULL);
 	XMC_GPIO_SetMode(LED3, XMC_GPIO_MODE_OUTPUT_PUSH_PULL);
 	XMC_GPIO_SetMode(LED4, XMC_GPIO_MODE_OUTPUT_PUSH_PULL);
-	XMC_GPIO_SetOutputHigh(LED1);
-	XMC_GPIO_SetOutputLow(LED2);
-	XMC_GPIO_SetOutputHigh(LED3);
-	XMC_GPIO_SetOutputHigh(LED4);
+
+	// NOTE:
+	// led turns on when the output is set to LOW and vice-versa
+	// see XMC1100 boot kit schematic
+	XMC_GPIO_SetOutputLow(LED1); // led ON -> system interrupt will toggle every 1 second
+	XMC_GPIO_SetOutputHigh(LED2); // led OFF -> as above
+	XMC_GPIO_SetOutputHigh(LED3); // led always OFF
+	XMC_GPIO_SetOutputHigh(LED4); // led always OFF
+
 	// Configure RTC
 	XMC_RTC_Disable();
 	XMC_RTC_Init(&rtc_conf);
 	XMC_RTC_Enable();
 	XMC_RTC_Start();
+
 	// Configure System Tick
 	SysTick_Config(SystemCoreClock / TICKS_PER_SECOND);
 
 	uint8_t rxData=0x00; // buffer byte from UART
 
-	print(welcome,sizeof(welcome));
+	print(welcome); // start-up message
+	started=true;
 
 	while(1)
 		{
@@ -181,6 +234,19 @@ int main(void)
 			XMC_UART_CH_ClearStatusFlag(XMC_UART0_CH1,XMC_UART_CH_STATUS_FLAG_RECEIVE_INDICATION | XMC_UART_CH_STATUS_FLAG_ALTERNATIVE_RECEIVE_INDICATION );
 			// counter for byte received
 			static uint8_t byteCount=0;
+
+			// exit from settings on CR or LF
+			if ((rxData=='\n') || (rxData=='\r'))
+				{
+				if (settings)
+					{
+					setTime=false;
+					setDate=false;
+					setDayofweek=false;
+					settings=false;
+					print(ex_message);
+					}
+				}
 
 			// are we in setting time mode?
 			if (setTime)
@@ -212,16 +278,16 @@ int main(void)
 						  XMC_RTC_SetTime(&actual_time);
 	  			  		  XMC_RTC_Enable();
 	  			  		  XMC_RTC_Start();
-	  			  		  print(ok_message,sizeof(ok_message));
+	  			  		  print(ok_message);
 	  			  	  	  }
 	  			  	  else // hour/minute/seconds value not valid
 	  			  	  	  {
-	  			  		  print(err_time,sizeof(err_time));
+	  			  		  print(err_time);
 	  			  	  	  }
 	  			  	  }
 	  			  else // format not valid (not hh:mm:ss);
 	  			  	  {
-	  				  print(err_time,sizeof(err_time));
+	  				  print(err_time);
 	  			  	  }
 	  			  setTime=false;
 	  			  settings=false;
@@ -235,39 +301,40 @@ int main(void)
 				// re-send byte on uart
 				XMC_UART_CH_Transmit(XMC_UART0_CH1, rxData);
 
-				// 8 bytes received (hh:mm:ss)
-				if (byteCount==8)
+				// 10 bytes received (dd-mm-yyyy)
+				if (byteCount==10)
 					{
-				  	if ((setTimeDateBuffer[2]=='-') && (setTimeDateBuffer[5]=='-'))
+				  	if (((setTimeDateBuffer[2]=='-') && (setTimeDateBuffer[5]=='-')) || ((setTimeDateBuffer[2]=='/') && (setTimeDateBuffer[5]=='/')))
 				  		{
 				  		uint8_t sd=0;
 				  		uint8_t sm=0;
-				  		uint8_t sy=0;
+				  		uint16_t sy=0;
 				  		sd=((setTimeDateBuffer[0]-'0')*10)+setTimeDateBuffer[1]-'0';
 				  		sm=((setTimeDateBuffer[3]-'0')*10)+setTimeDateBuffer[4]-'0';
-				  		sy=((setTimeDateBuffer[6]-'0')*10)+setTimeDateBuffer[7]-'0';
+				  		sy=((setTimeDateBuffer[6]-'0')*1000)+((setTimeDateBuffer[7]-'0')*100);
+				  		sy += ((setTimeDateBuffer[8]-'0')*10)+(setTimeDateBuffer[9]-'0');
 				  		// check if data valid
-				  		if ((sd<32) && (sm<13) && (sy<100))
+				  		if ((sd<32) && (sd>0) && (sm>0) && (sm<13))
 				  			{
 				  			// retrieve actual value and edit only date
 				  			XMC_RTC_GetTime(&actual_time);
 				  			XMC_RTC_Disable();
 				  			actual_time.days=sd;
 				  			actual_time.month=sm-1;
-				  			actual_time.year=2000+sy;
+				  			actual_time.year=sy;
 				  			XMC_RTC_SetTime(&actual_time);
 				  			XMC_RTC_Enable();
 				  			XMC_RTC_Start();
-				  			print(ok_message,sizeof(ok_message));
+				  			print(ok_message);
 				  			}
 				  		else // day/month/year value not valid
 				  			{
-				  			print(err_date,sizeof(err_date));
+				  			print(err_date);
 				  			}
 				  		}
-				  	else // format not valid (not dd-mm-yy);
+				  	else // format not valid (not dd-mm-yyyy);
 				  	  	{
-				  		print(err_date,sizeof(err_date));
+				  		print(err_date);
 				  		}
 				  setDate=false;
 				  settings=false;
@@ -291,11 +358,11 @@ int main(void)
 					XMC_RTC_SetTime(&actual_time);
 					XMC_RTC_Enable();
 					XMC_RTC_Start();
-					print(ok_message,sizeof(ok_message));
+					print(ok_message);
 					}
 				else // day of week not valid
 					{
-					print(err_dow,sizeof(err_dow));
+					print(err_dow);
 					}
 				setDayofweek=false;
 				settings=false;
@@ -313,7 +380,7 @@ int main(void)
 						setTime=true;
 						settings=true;
 						byteCount=0;
-						print(pls_time,sizeof(pls_time));
+						print(pls_time);
 					 break;
 
 					// set date request
@@ -322,7 +389,7 @@ int main(void)
 						setDate=true;
 						settings=true;
 						byteCount=0;
-						print(pls_date,sizeof(pls_date));
+						print(pls_date);
 					break;
 
 					// set day of week request
@@ -330,33 +397,19 @@ int main(void)
 					case 'W':
 						setDayofweek=true;
 						settings=true;
-						print(pls_dow,sizeof(pls_dow));
+						print(pls_dow);
 					break;
 
 					// help
 					case 'h':
 					case 'H':
 					case '?':
-						print((const uint8_t *)"\n\r\n\rPress:\n\r",12);
-						print((const uint8_t *)"t - for time settings\n\r",23);
-						print((const uint8_t *)"d - for date settings\n\r",23);
-						print((const uint8_t *)"w - for day-of-week settings\n\r\n\r",32);
+						print((const uint8_t *)"\n\r\n\rPress:\n\r");
+						print((const uint8_t *)"t - for time settings\n\r");
+						print((const uint8_t *)"d - for date settings\n\r");
+						print((const uint8_t *)"w - for day-of-week settings\n\r\n\r");
 					break;
 					} // \switch(rxData)
-
-
-			if ((rxData=='\n') || (rxData=='\r'))
-				{
-				if (settings)
-					{
-					setTime=false;
-					setDate=false;
-					setDayofweek=false;
-					settings=false;
-					print(ex_message,sizeof(ex_message));
-					}
-				}
-
 			} // \no setTime, no setDate
 		  } // \data in the buffer
 		} // \while(1)
